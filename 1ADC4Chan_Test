@@ -1,0 +1,133 @@
+from machine import Pin, SPI
+import time
+
+# ------------------------------------------------------------
+# SPI SETUP
+# ------------------------------------------------------------
+spi = SPI(
+    0,
+    baudrate=1_000_000,
+    polarity=1,
+    phase=1,
+    bits=8,
+    firstbit=SPI.MSB,
+    sck=Pin(18),
+    mosi=Pin(19),
+    miso=Pin(16)
+)
+
+# ------------------------------------------------------------
+# SINGLE ADC CHIP SELECT
+# ------------------------------------------------------------
+CS = Pin(17, Pin.OUT, value=1)
+
+# ------------------------------------------------------------
+# SINGLE ADC DRDY PIN
+# ------------------------------------------------------------
+DRDY = Pin(20, Pin.IN)
+
+# ------------------------------------------------------------
+# ADS1256 COMMANDS
+# ------------------------------------------------------------
+CMD_WREG = 0x50
+CMD_RREG = 0x10
+CMD_SYNC = 0xFC
+CMD_WAKEUP = 0x00
+CMD_RDATA = 0x01
+
+# ------------------------------------------------------------
+# LOW-LEVEL SPI HELPERS
+# ------------------------------------------------------------
+def cs_low():
+    CS.value(0)
+
+def cs_high():
+    CS.value(1)
+
+def wait_drdy():
+    while DRDY.value() == 1:
+        pass
+
+def write_cmd(cmd):
+    cs_low()
+    spi.write(bytearray([cmd]))
+    cs_high()
+
+def write_reg(reg, value):
+    cs_low()
+    spi.write(bytearray([CMD_WREG | reg, 0x00, value]))
+    cs_high()
+
+def read_data():
+    cs_low()
+
+    spi.write(bytearray([CMD_RDATA]))
+    time.sleep_us(10)
+
+    raw = spi.read(3)
+
+    cs_high()
+
+    val = (raw[0] << 16) | (raw[1] << 8) | raw[2]
+
+    if val & 0x800000:
+        val -= 0x1000000
+
+    return val
+
+# ------------------------------------------------------------
+# CONFIGURE ADS1256
+# ------------------------------------------------------------
+def init_ads1256():
+    write_reg(0x00, 0x01)  # STATUS: disable buffer
+    write_reg(0x01, 0x00)  # MUX: AIN0/AINCOM
+    write_reg(0x02, 0x03)  # ADCON: gain=1
+    write_reg(0x03, 0xF0)  # DRATE
+    write_cmd(CMD_SYNC)
+    write_cmd(CMD_WAKEUP)
+
+init_ads1256()
+
+# ------------------------------------------------------------
+# SET INPUT CHANNEL
+# ------------------------------------------------------------
+def set_channel(ch):
+    mux = (ch << 4) | 0x08  # AINx vs AINCOM
+
+    write_reg(0x01, mux)
+
+    write_cmd(CMD_SYNC)
+    write_cmd(CMD_WAKEUP)
+
+# ------------------------------------------------------------
+# READ 4 CHANNELS (AIN0-AIN3)
+# ------------------------------------------------------------
+def read_channels():
+    results = []
+
+    for ch in range(4):
+
+        set_channel(ch)
+
+        wait_drdy()
+
+        val = read_data()
+
+        results.append(val)
+
+    return results
+
+# ------------------------------------------------------------
+# MAIN LOOP
+# ------------------------------------------------------------
+while True:
+
+    data = read_channels()
+
+    print("CH0:", data[0])
+    print("CH1:", data[1])
+    print("CH2:", data[2])
+    print("CH3:", data[3])
+    print("----------------------------------------")
+
+    time.sleep(0.5)
